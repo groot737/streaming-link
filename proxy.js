@@ -45,12 +45,16 @@ const server = http.createServer(async (req, res) => {
         const serversUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/servers";
         const watchUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/watch";
 
-        console.log("[API] Fetching stream data...");
+        // Get params from the URL query
+        const episodeId = parsedUrl.query.episodeId || "10766";
+        const mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+
+        console.log(`[API] Fetching stream data for episodeId: ${episodeId}, mediaId: ${mediaId}...`);
 
         try {
             // A. Get servers
             const { data: servers } = await axios.get(serversUrl, {
-                params: { episodeId: "10766", mediaId: "tv/watch-rick-and-morty-39480" }
+                params: { episodeId, mediaId }
             });
 
             // B. Find upcloud
@@ -62,13 +66,13 @@ const server = http.createServer(async (req, res) => {
             let streamData;
             try {
                 const res = await axios.get(watchUrl, {
-                    params: { episodeId: "10766", mediaId: "tv/watch-rick-and-morty-39480", server: upcloud.name }
+                    params: { episodeId, mediaId, server: upcloud.name }
                 });
                 streamData = res.data;
             } catch (err) {
                 console.log("[API] Name failed, trying ID...");
                 const res = await axios.get(watchUrl, {
-                    params: { episodeId: "10766", mediaId: "tv/watch-rick-and-morty-39480", server: upcloud.id }
+                    params: { episodeId, mediaId, server: upcloud.id }
                 });
                 streamData = res.data;
             }

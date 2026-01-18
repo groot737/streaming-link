@@ -38,8 +38,12 @@
     <script>
         var video = document.getElementById('video');
 
-        // Fetch the stream data from our local proxy API
-        fetch('/fetch-stream')
+        // 1. Get URL parameters (e.g. ?mediaId=...&episodeId=...)
+        const urlParams = new URLSearchParams(window.location.search);
+        const query = urlParams.toString();
+
+        // 2. Fetch the stream data from our local proxy API with the params
+        fetch('/fetch-stream?' + query)
             .then(response => response.json())
             .then(data => {
                 console.log("Stream Data:", data);
