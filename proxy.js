@@ -40,7 +40,46 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 2. NEW: Endpoint to get the stream data (logic from index.js)
+    // 2. NEW: Universal M3U8 Endpoint
+    // Usage: /m3u8?mediaId=...&episodeId=...
+    if (parsedUrl.pathname === '/m3u8') {
+        const serversUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/servers";
+        const watchUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/watch";
+
+        const episodeId = parsedUrl.query.episodeId || "10766";
+        const mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+
+        try {
+            const { data: servers } = await axios.get(serversUrl, { params: { episodeId, mediaId } });
+            const upcloud = servers.find(s => s.name === "upcloud");
+            if (!upcloud) throw new Error("Upcloud server not found");
+
+            let streamData;
+            try {
+                const res = await axios.get(watchUrl, { params: { episodeId, mediaId, server: upcloud.name } });
+                streamData = res.data;
+            } catch (err) {
+                const res = await axios.get(watchUrl, { params: { episodeId, mediaId, server: upcloud.id } });
+                streamData = res.data;
+            }
+
+            // Find the best sources (M3U8)
+            const source = streamData.sources.find(s => s.quality === 'auto') || streamData.sources[0];
+
+            // Redirect to our smart proxy to handle the manifest rewriting
+            const proxyUrl = `/proxy?url=${encodeURIComponent(source.url)}`;
+            res.writeHead(302, { 'Location': proxyUrl });
+            res.end();
+
+        } catch (error) {
+            console.error('[M3U8 Error]', error.message);
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: error.message }));
+        }
+        return;
+    }
+
+    // 3. JSON API (Keep for the frontend player if needed)
     if (parsedUrl.pathname === '/fetch-stream') {
         const serversUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/servers";
         const watchUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/watch";
@@ -88,7 +127,7 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 3. The /proxy endpoint
+    // 4. The Smart Proxy Endpoint
     if (parsedUrl.pathname === '/proxy') {
         const targetUrl = parsedUrl.query.url;
 
@@ -98,37 +137,73 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        console.log(`[Proxy] Fetching: ${targetUrl}`);
+        // Helper to check if it's an M3U8
+        const isM3u8 = targetUrl.includes('.m3u8');
 
         try {
-            // 3. Request the target URL with the necessary Headers to bypass blocking
-            // These headers mimic a real browser visiting the site where the video is embedded
-            const response = await axios({
-                method: 'get',
-                url: targetUrl,
-                responseType: 'stream', // Important for video
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.116 Safari/537.36',
-                    'Referer': 'https://streameeeeee.site/', // The magic key to open the door
-                    'Origin': 'https://streameeeeee.site'
+            // Common Headers
+            const headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/83.0.4103.116 Safari/537.36',
+                'Referer': 'https://streameeeeee.site/',
+                'Origin': 'https://streameeeeee.site'
+            };
+
+            if (isM3u8) {
+                // FETCH AND REWRITE
+                const response = await axios.get(targetUrl, { headers, responseType: 'text' });
+
+                // Rewrite the manifest
+                // 1. Resolve relative URLs to absolute
+                // 2. Wrap all URLs in our proxy
+                const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+                let manifest = response.data;
+
+                // Regex to find all lines that are URLs (not starting with #)
+                // This covers both absolute (http...) and relative (segment.ts)
+                manifest = manifest.replace(/^(?!#)(.+)$/gm, (match) => {
+                    let absoluteUrl = match;
+                    if (!match.startsWith('http')) {
+                        absoluteUrl = new URL(match, baseUrl).toString();
+                    }
+                    return `http://${req.headers.host}/proxy?url=${encodeURIComponent(absoluteUrl)}`;
+                });
+
+                // Also fix URI="..." in #EXT-X-KEY
+                manifest = manifest.replace(/URI="([^"]+)"/g, (match, p1) => {
+                    let absoluteUrl = p1;
+                    if (!p1.startsWith('http')) {
+                        absoluteUrl = new URL(p1, baseUrl).toString();
+                    }
+                    return `URI="http://${req.headers.host}/proxy?url=${encodeURIComponent(absoluteUrl)}"`;
+                });
+
+                res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.end(manifest);
+
+            } else {
+                // STREAM BINARY (TS FILES/IMAGES)
+                const response = await axios({
+                    method: 'get',
+                    url: targetUrl,
+                    responseType: 'stream',
+                    headers
+                });
+
+                if (response.headers['content-type']) {
+                    res.setHeader('Content-Type', response.headers['content-type']);
                 }
-            });
-
-            // 4. Forward the Content-Type (e.g., application/vnd.apple.mpegurl)
-            if (response.headers['content-type']) {
-                res.setHeader('Content-Type', response.headers['content-type']);
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                response.data.pipe(res);
             }
-
-            // 5. Pipe the data back to the player
-            response.data.pipe(res);
 
         } catch (error) {
             console.error('[Proxy Error]', error.message);
             res.statusCode = 500;
-            res.end('Proxy Error: ' + error.message);
+            res.end('Proxy Error');
         }
     } else {
-        res.end('Local Proxy is running. Usage: /proxy?url=TARGET_URL');
+        res.end('Server Running.');
     }
 });
 
