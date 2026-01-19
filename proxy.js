@@ -10,6 +10,11 @@ const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3000;
 
+// Simple In-Memory Cache for API lookups
+// Key: episodeId + mediaId, Value: { url: string, expiry: number }
+const apiCache = new Map();
+const CACHE_DURATION = 3600 * 1000; // 1 hour
+
 // Create a simple HTTP server
 const server = http.createServer(async (req, res) => {
     // 1. Enable CORS so your player.html (on port 8080) can access this
@@ -48,6 +53,18 @@ const server = http.createServer(async (req, res) => {
 
         const episodeId = parsedUrl.query.episodeId || "10766";
         const mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+        const cacheKey = `${episodeId}-${mediaId}`;
+
+        // CHECK CACHE
+        if (apiCache.has(cacheKey)) {
+            const cached = apiCache.get(cacheKey);
+            if (Date.now() < cached.expiry) {
+                const proxyUrl = `/proxy?url=${encodeURIComponent(cached.url)}`;
+                res.writeHead(302, { 'Location': proxyUrl });
+                res.end();
+                return;
+            }
+        }
 
         try {
             const { data: servers } = await axios.get(serversUrl, { params: { episodeId, mediaId } });
@@ -65,6 +82,9 @@ const server = http.createServer(async (req, res) => {
 
             // Find the best sources (M3U8)
             const source = streamData.sources.find(s => s.quality === 'auto') || streamData.sources[0];
+
+            // SAVE TO CACHE
+            apiCache.set(cacheKey, { url: source.url, expiry: Date.now() + CACHE_DURATION });
 
             // Redirect to our smart proxy to handle the manifest rewriting
             const proxyUrl = `/proxy?url=${encodeURIComponent(source.url)}`;
@@ -140,6 +160,9 @@ const server = http.createServer(async (req, res) => {
         // Helper to check if it's an M3U8
         const isM3u8 = targetUrl.includes('.m3u8');
 
+        // Optimization: Removed console.log for hot path
+        // console.log(`[Proxy] Fetching: ${targetUrl}`);
+
         try {
             // Common Headers
             const headers = {
@@ -159,9 +182,12 @@ const server = http.createServer(async (req, res) => {
                 let manifest = response.data;
 
                 // Determine protocol: Use 'https' if we are on production (Railway usually sets x-forwarded-proto)
-                // Default to https since Mixed Content is the issue
-                const protocol = req.headers['x-forwarded-proto'] || 'https';
+                // Default to https, UNLESS we are on localhost
+                let protocol = req.headers['x-forwarded-proto'] || 'https';
                 const host = req.headers.host;
+                if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
+                    protocol = 'http';
+                }
 
                 // Regex to find all lines that are URLs (not starting with #)
                 // This covers both absolute (http...) and relative (segment.ts)
