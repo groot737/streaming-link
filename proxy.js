@@ -158,6 +158,11 @@ const server = http.createServer(async (req, res) => {
                 const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
                 let manifest = response.data;
 
+                // Determine protocol: Use 'https' if we are on production (Railway usually sets x-forwarded-proto)
+                // Default to https since Mixed Content is the issue
+                const protocol = req.headers['x-forwarded-proto'] || 'https';
+                const host = req.headers.host;
+
                 // Regex to find all lines that are URLs (not starting with #)
                 // This covers both absolute (http...) and relative (segment.ts)
                 manifest = manifest.replace(/^(?!#)(.+)$/gm, (match) => {
@@ -165,7 +170,7 @@ const server = http.createServer(async (req, res) => {
                     if (!match.startsWith('http')) {
                         absoluteUrl = new URL(match, baseUrl).toString();
                     }
-                    return `http://${req.headers.host}/proxy?url=${encodeURIComponent(absoluteUrl)}`;
+                    return `${protocol}://${host}/proxy?url=${encodeURIComponent(absoluteUrl)}`;
                 });
 
                 // Also fix URI="..." in #EXT-X-KEY
@@ -174,7 +179,7 @@ const server = http.createServer(async (req, res) => {
                     if (!p1.startsWith('http')) {
                         absoluteUrl = new URL(p1, baseUrl).toString();
                     }
-                    return `URI="http://${req.headers.host}/proxy?url=${encodeURIComponent(absoluteUrl)}"`;
+                    return `URI="${protocol}://${host}/proxy?url=${encodeURIComponent(absoluteUrl)}"`;
                 });
 
                 res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
