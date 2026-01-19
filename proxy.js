@@ -15,6 +15,30 @@ const PORT = process.env.PORT || 3000;
 const apiCache = new Map();
 const CACHE_DURATION = 3600 * 1000; // 1 hour
 
+// Helper to resolve episodeId if missing (for movies)
+async function resolveEpisodeId(mediaId, providedEpisodeId) {
+    if (providedEpisodeId) return providedEpisodeId;
+
+    // Check if we have a cached episodeId for this media
+    const cacheKey = `ep_resolve_${mediaId}`;
+    if (apiCache.has(cacheKey)) return apiCache.get(cacheKey);
+
+    try {
+        console.log(`[Auto-Resolve] Fetching info for ${mediaId}...`);
+        const infoUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/info";
+        const { data } = await axios.get(infoUrl, { params: { id: mediaId } });
+
+        if (data.episodes && data.episodes.length > 0) {
+            const foundId = data.episodes[0].id;
+            apiCache.set(cacheKey, foundId); // Cache mapping
+            return foundId;
+        }
+    } catch (err) {
+        console.error("[Auto-Resolve Error]", err.message);
+    }
+    return null; // Failed to resolve
+}
+
 // Create a simple HTTP server
 const server = http.createServer(async (req, res) => {
     // 1. Enable CORS so your player.html (on port 8080) can access this
@@ -51,8 +75,15 @@ const server = http.createServer(async (req, res) => {
         const serversUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/servers";
         const watchUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/watch";
 
-        const episodeId = parsedUrl.query.episodeId || "10766";
-        const mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+        let mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+        let episodeId = parsedUrl.query.episodeId;
+
+        // Auto-resolve episodeId if missing
+        if (!episodeId) {
+            episodeId = await resolveEpisodeId(mediaId, episodeId);
+            if (!episodeId) episodeId = "10766"; // Fallback default
+        }
+
         const cacheKey = `${episodeId}-${mediaId}`;
 
         // CHECK CACHE
@@ -99,14 +130,93 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 3. JSON API (Keep for the frontend player if needed)
+    // 3. NEW: JSON Link Endpoint
+    if (parsedUrl.pathname === '/api/link') {
+        const serversUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/servers";
+        const watchUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/watch";
+
+        let mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+        let episodeId = parsedUrl.query.episodeId;
+
+        // Auto-resolve episodeId if missing
+        if (!episodeId) {
+            episodeId = await resolveEpisodeId(mediaId, episodeId);
+            if (!episodeId) episodeId = "10766"; // Fallback default
+        }
+
+        const cacheKey = `${episodeId}-${mediaId}`;
+
+        // CHECK CACHE
+        if (apiCache.has(cacheKey)) {
+            const cached = apiCache.get(cacheKey);
+            if (Date.now() < cached.expiry) {
+                // Determine protocol/host again for the JSON response
+                let protocol = req.headers['x-forwarded-proto'] || 'https';
+                const host = req.headers.host;
+                if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
+                    protocol = 'http';
+                }
+                const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(cached.url)}`;
+
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ url: proxyUrl }));
+                return;
+            }
+        }
+
+        try {
+            const { data: servers } = await axios.get(serversUrl, { params: { episodeId, mediaId } });
+            const upcloud = servers.find(s => s.name === "upcloud");
+            if (!upcloud) throw new Error("Upcloud server not found");
+
+            let streamData;
+            try {
+                const res = await axios.get(watchUrl, { params: { episodeId, mediaId, server: upcloud.name } });
+                streamData = res.data;
+            } catch (err) {
+                const res = await axios.get(watchUrl, { params: { episodeId, mediaId, server: upcloud.id } });
+                streamData = res.data;
+            }
+
+            // Find best source (M3U8)
+            const source = streamData.sources.find(s => s.quality === 'auto') || streamData.sources[0];
+
+            // SAVE TO CACHE
+            apiCache.set(cacheKey, { url: source.url, expiry: Date.now() + CACHE_DURATION });
+
+            // Construct full proxy URL
+            let protocol = req.headers['x-forwarded-proto'] || 'https';
+            const host = req.headers.host;
+            if (host && (host.includes('localhost') || host.includes('127.0.0.1'))) {
+                protocol = 'http';
+            }
+            const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(source.url)}`;
+
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ url: proxyUrl }));
+
+        } catch (error) {
+            console.error('[Link API Error]', error.message);
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: error.message }));
+        }
+        return;
+    }
+
+    // 4. JSON API (Keep for the frontend player if needed)
     if (parsedUrl.pathname === '/fetch-stream') {
         const serversUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/servers";
         const watchUrl = "https://consumet-eta-five.vercel.app/movies/flixhq/watch";
 
         // Get params from the URL query
-        const episodeId = parsedUrl.query.episodeId || "10766";
-        const mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+        let mediaId = parsedUrl.query.mediaId || "tv/watch-rick-and-morty-39480";
+        let episodeId = parsedUrl.query.episodeId;
+
+        // Auto-resolve episodeId if missing
+        if (!episodeId) {
+            episodeId = await resolveEpisodeId(mediaId, episodeId);
+            if (!episodeId) episodeId = "10766"; // Fallback default
+        }
 
         console.log(`[API] Fetching stream data for episodeId: ${episodeId}, mediaId: ${mediaId}...`);
 
