@@ -35,12 +35,30 @@
 
     <p>Using Local Proxy (relative path) to bypass 403 Forbidden.</p>
 
+    <!-- Shareable Link Section -->
+    <div style="margin-top: 10px; width: 800px; text-align: left;">
+        <label for="shareLink" style="font-weight: bold;">Universal HLS Link (Works in other players):</label>
+        <input type="text" id="shareLink"
+            style="width: 100%; padding: 10px; margin-top: 5px; background: #333; color: white; border: 1px solid #555; border-radius: 4px;"
+            readonly onclick="this.select()">
+    </div>
+
     <script>
         var video = document.getElementById('video');
 
         // 1. Get URL parameters (e.g. ?mediaId=...&episodeId=...)
         const urlParams = new URLSearchParams(window.location.search);
         const query = urlParams.toString();
+
+        // 1.5 Generate and display the Universal Link
+        const defaults = {
+            episodeId: "10766",
+            mediaId: "tv/watch-rick-and-morty-39480"
+        };
+        const epId = urlParams.get('episodeId') || defaults.episodeId;
+        const medId = urlParams.get('mediaId') || defaults.mediaId;
+        const universalLink = `${window.location.protocol}//${window.location.host}/m3u8?episodeId=${epId}&mediaId=${medId}`;
+        document.getElementById('shareLink').value = universalLink;
 
         // 2. Fetch the stream data from our local proxy API with the params
         fetch('/fetch-stream?' + query)
