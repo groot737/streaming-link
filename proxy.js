@@ -55,17 +55,10 @@ const server = http.createServer(async (req, res) => {
 
     const parsedUrl = url.parse(req.url, true);
 
-    // 0. Serve the HTML Player at root "/"
+    // 0. Root Endpoint - Basic Status Message
     if (parsedUrl.pathname === '/') {
-        fs.readFile(path.join(__dirname, 'player.html'), (err, data) => {
-            if (err) {
-                res.writeHead(500);
-                res.end('Error loading player.html');
-                return;
-            }
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            res.end(data);
-        });
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Proxy API is running. Use /api/link or /m3u8 endpoints.');
         return;
     }
 
